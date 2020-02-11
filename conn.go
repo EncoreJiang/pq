@@ -708,52 +708,52 @@ func (noRows) RowsAffected() (int64, error) {
 
 // Decides which column formats to use for a prepared statement.  The input is
 // an array of type oids, one element per result column.
-func decideColumnFormats(colTyps []fieldDesc, forceText bool) (colFmts []format, colFmtData []byte) {
+func decideColumnFormats(colFmts []format, colTyps []fieldDesc, forceText bool) (colFmtData []byte) {
 	if len(colTyps) == 0 {
-		return nil, colFmtDataAllText
+		return colFmtDataAllText
 	}
 
-	colFmts = make([]format, len(colTyps))
-	if forceText {
-		return colFmts, colFmtDataAllText
-	}
+	// colFmts = make([]format, len(colTyps))
+	// if forceText {
+	// 	return colFmts, colFmtDataAllText
+	// }
 
-	allBinary := true
-	allText := true
-	for i, t := range colTyps {
-		switch t.OID {
-		// This is the list of types to use binary mode for when receiving them
-		// through a prepared statement.  If a type appears in this list, it
-		// must also be implemented in binaryDecode in encode.go.
-		case oid.T_bytea:
-			fallthrough
-		case oid.T_int8:
-			fallthrough
-		case oid.T_int4:
-			fallthrough
-		case oid.T_int2:
-			fallthrough
-		case oid.T_uuid:
-			colFmts[i] = formatBinary
-			allText = false
+	// allBinary := true
+	// allText := true
+	// for i, t := range colTyps {
+	// 	switch t.OID {
+	// 	// This is the list of types to use binary mode for when receiving them
+	// 	// through a prepared statement.  If a type appears in this list, it
+	// 	// must also be implemented in binaryDecode in encode.go.
+	// 	case oid.T_bytea:
+	// 		fallthrough
+	// 	case oid.T_int8:
+	// 		fallthrough
+	// 	case oid.T_int4:
+	// 		fallthrough
+	// 	case oid.T_int2:
+	// 		fallthrough
+	// 	case oid.T_uuid:
+	// 		colFmts[i] = formatBinary
+	// 		allText = false
 
-		default:
-			allBinary = false
-		}
-	}
+	// 	default:
+	// 		allBinary = false
+	// 	}
+	// }
 
-	if allBinary {
-		return colFmts, colFmtDataAllBinary
-	} else if allText {
-		return colFmts, colFmtDataAllText
-	} else {
+	// if allBinary {
+	// 	return colFmts, colFmtDataAllBinary
+	// } else if allText {
+	// 	return colFmts, colFmtDataAllText
+	// } else {
 		colFmtData = make([]byte, 2+len(colFmts)*2)
 		binary.BigEndian.PutUint16(colFmtData, uint16(len(colFmts)))
 		for i, v := range colFmts {
 			binary.BigEndian.PutUint16(colFmtData[2+i*2:], uint16(v))
 		}
-		return colFmts, colFmtData
-	}
+		return colFmtData
+	// }
 }
 
 func (cn *conn) prepareTo(q, stmtName string) *stmt {
@@ -772,8 +772,8 @@ func (cn *conn) prepareTo(q, stmtName string) *stmt {
 	cn.send(b)
 
 	cn.readParseResponse()
-	st.paramTyps, st.colNames, st.colTyps = cn.readStatementDescribeResponse()
-	st.colFmts, st.colFmtData = decideColumnFormats(st.colTyps, cn.disablePreparedBinaryResult)
+	st.paramTyps, st.colNames, st.colFmts, st.colTyps = cn.readStatementDescribeResponse()
+	st.colFmtData = decideColumnFormats(st.colFmts, st.colTyps, cn.disablePreparedBinaryResult)
 	cn.readReadyForQuery()
 	return st
 }
@@ -1669,7 +1669,7 @@ func (cn *conn) readParseResponse() {
 	}
 }
 
-func (cn *conn) readStatementDescribeResponse() (paramTyps []oid.Oid, colNames []string, colTyps []fieldDesc) {
+func (cn *conn) readStatementDescribeResponse() (paramTyps []oid.Oid, colNames []string, colFmts []format, colTyps []fieldDesc) {
 	for {
 		t, r := cn.recv1()
 		switch t {
@@ -1680,10 +1680,10 @@ func (cn *conn) readStatementDescribeResponse() (paramTyps []oid.Oid, colNames [
 				paramTyps[i] = r.oid()
 			}
 		case 'n':
-			return paramTyps, nil, nil
+			return paramTyps, nil, nil, nil
 		case 'T':
-			colNames, colTyps = parseStatementRowDescribe(r)
-			return paramTyps, colNames, colTyps
+			colNames, colFmts, colTyps = parseStatementRowDescribe(r)
+			return paramTyps, colNames, colFmts, colTyps
 		case 'E':
 			err := parseError(r)
 			cn.readReadyForQuery()
@@ -1791,18 +1791,18 @@ func (cn *conn) readExecuteResponse(protocolState string) (res driver.Result, co
 	}
 }
 
-func parseStatementRowDescribe(r *readBuf) (colNames []string, colTyps []fieldDesc) {
+func parseStatementRowDescribe(r *readBuf) (colNames []string, colFmts []format, colTyps []fieldDesc) {
 	n := r.int16()
 	colNames = make([]string, n)
 	colTyps = make([]fieldDesc, n)
+	colFmts = make([]format, n)
 	for i := range colNames {
 		colNames[i] = r.string()
 		r.next(6)
 		colTyps[i].OID = r.oid()
 		colTyps[i].Len = r.int16()
 		colTyps[i].Mod = r.int32()
-		// format code not known when describing a statement; always 0
-		r.next(2)
+		colFmts[i] = format(r.int16())
 	}
 	return
 }
